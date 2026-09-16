@@ -207,27 +207,6 @@
       <div class="scroll"><table id="rawTable"></table></div>
     </details>
   </div>
-
-  <details class="raw" style="margin-top:24px" id="howto">
-    <summary>Run this on a real device</summary>
-    <div class="howto">
-      <p>Camera and location access only work over HTTPS (or <code>localhost</code>), so pick one of these:</p>
-      <h3>Open the hosted link on your phone</h3>
-      <p>Open this page's URL in Safari or Chrome on the device. Tap <strong>Take a photo</strong>; the browser asks for camera, then location. On iOS, Share → <strong>Add to Home Screen</strong> launches it like an app.</p>
-      <h3>Host the HTML file yourself</h3>
-      <p>Save this file and put it on a free static host (GitHub Pages, Netlify, Vercel, Cloudflare Pages), then open that URL on your phone.</p>
-      <p>For local testing on the same Wi‑Fi, serve the folder and tunnel it to get an HTTPS URL:</p>
-      <pre>npx serve .
-npx localtunnel --port 3000   # or: ngrok http 3000</pre>
-      <h3>Wrap it in a native iOS app</h3>
-      <p>Load the file in a <code>WKWebView</code>. Add these keys to <code>Info.plist</code>, and <code>&lt;input capture&gt;</code> plus <code>navigator.geolocation</code> will work inside the web view:</p>
-      <pre>NSCameraUsageDescription
-NSPhotoLibraryUsageDescription
-NSLocationWhenInUseUsageDescription</pre>
-      <h3>Good to know</h3>
-      <p>iOS strips EXIF from photos captured through the browser camera, so the <strong>Device location</strong> section is what records the precise position for those shots. EXIF GPS fields fill in only for originals chosen from the library.</p>
-    </div>
-  </details>
 </main>
 
 <script>
