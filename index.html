@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/piexifjs@1.0.6/piexif.js"></script>
 <style>
   :root {
     --bg: #eceef0;
@@ -127,6 +128,18 @@
   .howto code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em; background: var(--surface-2); padding: 1px 5px; border-radius: 5px; }
   .howto pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; background: var(--surface-2); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; }
 
+  .cam { position: fixed; inset: 0; background: #000; z-index: 50; display: flex; flex-direction: column; }
+  .cam[hidden] { display: none; }
+  .cam video { flex: 1; width: 100%; min-height: 0; object-fit: cover; background: #000; }
+  .cam-top, .cam-bottom { position: absolute; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; color: #fff; }
+  .cam-top { top: 0; padding-top: max(14px, env(safe-area-inset-top)); background: linear-gradient(rgba(0,0,0,.55), transparent); font-size: .85rem; }
+  .cam-bottom { bottom: 0; padding-bottom: max(22px, env(safe-area-inset-bottom)); background: linear-gradient(transparent, rgba(0,0,0,.55)); }
+  .cam-btn { font: inherit; font-weight: 600; color: #fff; background: rgba(255,255,255,.18); border: 0; border-radius: 999px; padding: 8px 16px; min-width: 64px; }
+  .cam-spacer { min-width: 64px; }
+  .shutter { width: 72px; height: 72px; border-radius: 50%; border: 5px solid #fff; background: rgba(255,255,255,.35); cursor: pointer; }
+  .shutter:active { background: #fff; }
+  .shutter:focus-visible, .cam-btn:focus-visible { outline: 3px solid var(--accent); }
+
   @media (max-width: 520px) {
     .pickers { grid-template-columns: 1fr; }
     .preview { grid-template-columns: 88px 1fr; }
@@ -160,6 +173,16 @@
     <input type="file" id="inLibrary" accept="image/*,.heic,.heif,.dng,.cr2,.nef,.arw">
   </div>
 
+  <div class="cam" id="cam" hidden>
+    <video id="camVideo" autoplay playsinline muted></video>
+    <div class="cam-top"><span id="camInfo">Starting camera…</span><button class="cam-btn" id="camClose" type="button">Close</button></div>
+    <div class="cam-bottom">
+      <button class="cam-btn" id="camFlip" type="button">Flip</button>
+      <button class="shutter" id="camShutter" type="button" aria-label="Take photo"></button>
+      <span class="cam-spacer"></span>
+    </div>
+  </div>
+
   <div class="result" id="result">
     <div class="preview">
       <img id="thumb" alt="Selected photo preview">
@@ -173,6 +196,7 @@
 
     <div class="actions">
       <button class="btn primary" id="btnCopy" type="button">Copy as JSON</button>
+      <button class="btn" id="btnSave" type="button" style="display:none">Save photo</button>
       <button class="btn" id="btnReset" type="button">Start over</button>
     </div>
 
@@ -191,10 +215,120 @@
   const inCamera = $('inCamera'), inLibrary = $('inLibrary');
   let currentJSON = null;
 
-  $('btnCamera').addEventListener('click', () => inCamera.click());
+  $('btnCamera').addEventListener('click', openCamera);
   $('btnLibrary').addEventListener('click', () => inLibrary.click());
   inCamera.addEventListener('change', e => handle(e.target.files[0], true));
   inLibrary.addEventListener('change', e => handle(e.target.files[0], false));
+  $('camClose').addEventListener('click', closeCamera);
+  $('camFlip').addEventListener('click', async () => { facing = facing === 'environment' ? 'user' : 'environment'; try { await startStream(); } catch {} });
+  $('camShutter').addEventListener('click', capturePhoto);
+  $('btnSave').addEventListener('click', () => {
+    if (!lastCaptureUrl) return;
+    const a = document.createElement('a'); a.href = lastCaptureUrl; a.download = lastCaptureName; document.body.appendChild(a); a.click(); a.remove();
+  });
+
+  // ---------- In-page camera (so we can write real EXIF into the capture) ----------
+  let stream = null, facing = 'environment', lastCaptureUrl = null, lastCaptureName = 'photo.jpg';
+  async function openCamera() {
+    // Fall back to the native capture picker where getUserMedia isn't available
+    if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { inCamera.click(); return; }
+    $('cam').hidden = false;
+    $('camInfo').textContent = 'Starting camera…';
+    try { await startStream(); }
+    catch (e) { closeCamera(); inCamera.click(); }
+  }
+  async function startStream() {
+    stopStream();
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: { ideal: facing }, width: { ideal: 4032 }, height: { ideal: 3024 } } });
+    $('camVideo').srcObject = stream;
+    const t = stream.getVideoTracks()[0], s = t.getSettings();
+    $('camInfo').textContent = (t.label || 'Camera') + (s.width ? '  ' + s.width + ' × ' + s.height : '');
+  }
+  function stopStream() { if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } $('camVideo').srcObject = null; }
+  function closeCamera() { stopStream(); $('cam').hidden = true; }
+
+  async function capturePhoto() {
+    if (!stream) return;
+    const video = $('camVideo'), track = stream.getVideoTracks()[0];
+    const settings = track.getSettings ? track.getSettings() : {};
+    const label = track.label || '';
+    const c = document.createElement('canvas');
+    c.width = video.videoWidth || settings.width || 1280; c.height = video.videoHeight || settings.height || 720;
+    c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+    const when = new Date();
+    $('camInfo').textContent = 'Getting location…';
+    // Fresh fix for this shot; fall back to the fix taken at page load
+    const fresh = await getDeviceLocation();
+    const pos = fresh.error ? (devicePos && !devicePos.error ? devicePos : null) : fresh;
+    const dev = await deviceInfo();
+    closeCamera();
+
+    let dataUrl = c.toDataURL('image/jpeg', 0.92);
+    let embedded = false;
+    if (typeof piexif !== 'undefined') {
+      try { dataUrl = piexif.insert(piexif.dump(buildExif({ when, pos, dev, label, settings, w: c.width, h: c.height })), dataUrl); embedded = true; }
+      catch (e) { console.warn('EXIF write failed', e); }
+    }
+    const bin = atob(dataUrl.split(',')[1]);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    lastCaptureName = 'IMG_' + when.toISOString().replace(/[-:]/g, '').slice(0, 15) + '.jpg';
+    const file = new File([bytes], lastCaptureName, { type: 'image/jpeg', lastModified: when.getTime() });
+    if (lastCaptureUrl) URL.revokeObjectURL(lastCaptureUrl);
+    lastCaptureUrl = URL.createObjectURL(file);
+    await handle(file, true, pos, embedded);
+  }
+
+  function exifDate(d) {
+    const p = n => String(n).padStart(2, '0');
+    return d.getFullYear() + ':' + p(d.getMonth() + 1) + ':' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+  function rat(n, den) { return [Math.round(n * den), den]; }
+  function buildExif({ when, pos, dev, label, settings, w, h }) {
+    const D = Object.fromEntries(dev.filter(r => r[1] != null));
+    const ua = navigator.userAgent;
+    const make = /iPhone|iPad|Macintosh/.test(ua) ? 'Apple' : (D['Model'] || '').split(' ')[0] || 'Unknown';
+    const zeroth = {
+      [piexif.ImageIFD.Make]: make,
+      [piexif.ImageIFD.Model]: (D['Model'] || 'Unknown device').replace(/ \(.*\)$/, ''),
+      [piexif.ImageIFD.Software]: 'Photo metadata inspector (' + (D['Browser'] || 'web') + ')',
+      [piexif.ImageIFD.DateTime]: exifDate(when),
+      [piexif.ImageIFD.Orientation]: 1,
+      [piexif.ImageIFD.XResolution]: [72, 1], [piexif.ImageIFD.YResolution]: [72, 1], [piexif.ImageIFD.ResolutionUnit]: 2,
+      [piexif.ImageIFD.ImageDescription]: 'Captured in browser' + (D['Operating system'] ? ' on ' + D['Operating system'] : ''),
+    };
+    const exif = {
+      [piexif.ExifIFD.DateTimeOriginal]: exifDate(when),
+      [piexif.ExifIFD.DateTimeDigitized]: exifDate(when),
+      [piexif.ExifIFD.SubSecTimeOriginal]: String(when.getMilliseconds()).padStart(3, '0'),
+      [piexif.ExifIFD.PixelXDimension]: w, [piexif.ExifIFD.PixelYDimension]: h,
+      [piexif.ExifIFD.ColorSpace]: 1,
+      [piexif.ExifIFD.ExifVersion]: '0232',
+    };
+    if (label) exif[piexif.ExifIFD.LensModel] = label;
+    if (settings.iso) exif[piexif.ExifIFD.ISOSpeedRatings] = Math.round(settings.iso);
+    if (settings.exposureTime) exif[piexif.ExifIFD.ExposureTime] = rat(settings.exposureTime / 10000, 1000000); // spec unit: 100 µs
+    if (settings.focalLength) exif[piexif.ExifIFD.FocalLength] = rat(settings.focalLength, 100);
+    if (settings.zoom) exif[piexif.ExifIFD.DigitalZoomRatio] = rat(settings.zoom, 100);
+    const gps = {};
+    if (pos) {
+      const H = piexif.GPSHelper;
+      gps[piexif.GPSIFD.GPSVersionID] = [2, 3, 0, 0];
+      gps[piexif.GPSIFD.GPSLatitudeRef] = pos.lat >= 0 ? 'N' : 'S';
+      gps[piexif.GPSIFD.GPSLatitude] = H.degToDmsRational(Math.abs(pos.lat));
+      gps[piexif.GPSIFD.GPSLongitudeRef] = pos.lng >= 0 ? 'E' : 'W';
+      gps[piexif.GPSIFD.GPSLongitude] = H.degToDmsRational(Math.abs(pos.lng));
+      if (pos.altitude != null) { gps[piexif.GPSIFD.GPSAltitudeRef] = pos.altitude >= 0 ? 0 : 1; gps[piexif.GPSIFD.GPSAltitude] = rat(Math.abs(pos.altitude), 100); }
+      if (pos.heading != null && !isNaN(pos.heading)) { gps[piexif.GPSIFD.GPSImgDirectionRef] = 'T'; gps[piexif.GPSIFD.GPSImgDirection] = rat(pos.heading, 100); }
+      if (pos.speed != null) { gps[piexif.GPSIFD.GPSSpeedRef] = 'K'; gps[piexif.GPSIFD.GPSSpeed] = rat(pos.speed * 3.6, 100); }
+      if (pos.accuracy != null) gps[piexif.GPSIFD.GPSHPositioningError] = rat(pos.accuracy, 100);
+      const u = new Date(pos.time);
+      gps[piexif.GPSIFD.GPSTimeStamp] = [[u.getUTCHours(), 1], [u.getUTCMinutes(), 1], [u.getUTCSeconds(), 1]];
+      gps[piexif.GPSIFD.GPSDateStamp] = u.getUTCFullYear() + ':' + String(u.getUTCMonth() + 1).padStart(2, '0') + ':' + String(u.getUTCDate()).padStart(2, '0');
+    }
+    return { '0th': zeroth, 'Exif': exif, 'GPS': gps };
+  }
 
   // ---------- Device geolocation ----------
   let devicePos = null;
@@ -376,16 +510,18 @@
   }
 
   // ---------- Main ----------
-  async function handle(file, fromCamera) {
+  async function handle(file, fromCamera, presetPos, exifEmbedded) {
     if (!file) return;
     $('result').classList.add('show');
     $('groups').innerHTML = '<div class="empty">Reading…</div>';
     $('rawTable').innerHTML = '';
     $('notice').classList.remove('show');
+    $('btnSave').style.display = exifEmbedded ? '' : 'none';
     const preloaded = devicePos && !devicePos.error ? devicePos : null;
     devicePos = null; currentJSON = null;
-    // Permission was already requested on load; now get a fresh fix as close to the shot as possible
-    const locPromise = fromCamera ? getDeviceLocation().then(p => (p.error && preloaded) ? preloaded : p) : null;
+    // Use the fix taken at the shutter if we have it; otherwise get a fresh one now
+    const locPromise = !fromCamera ? null : presetPos ? Promise.resolve(presetPos)
+      : getDeviceLocation().then(p => (p.error && preloaded) ? preloaded : p);
 
     const dims = await readDimensions(file);
     $('thumb').src = dims.url;
@@ -406,7 +542,9 @@
     }
 
     const tagCount = Object.keys(exif).length;
-    if (libraryAvailable && tagCount === 0) {
+    if (exifEmbedded && tagCount > 0) {
+      showNotice('Metadata for this shot was written into the JPEG by this page (device, time, GPS). Tap "Save photo" to keep the file with it.');
+    } else if (libraryAvailable && tagCount === 0) {
       showNotice(fromCamera
         ? 'The browser hands over camera captures without EXIF, so camera make/model and GPS are not inside this image. The device and location shown below come from the browser and GPS directly.'
         : 'No EXIF data found in this image. Images shared through messaging apps or as screenshots usually have metadata stripped. Try choosing the original from your library.');
@@ -447,7 +585,7 @@
         ['Scene type', exif.SceneCaptureType],
       ]},
       { title: 'Date & time', rows: [
-        ['Taken', fmtDate(exif.DateTimeOriginal)],
+        ['Taken', fmtDate(exif.DateTimeOriginal) || (fromCamera && file.lastModified ? fmtDate(new Date(file.lastModified)) + ' (capture time)' : null)],
         ['Created', fmtDate(exif.CreateDate)],
         ['Modified (EXIF)', fmtDate(exif.ModifyDate)],
         ['Time zone offset', exif.OffsetTimeOriginal || exif.OffsetTime],
