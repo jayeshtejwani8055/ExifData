@@ -198,19 +198,26 @@
 
   // ---------- Device geolocation ----------
   let devicePos = null;
-  function getDeviceLocation() {
-    return new Promise(resolve => {
-      if (!('geolocation' in navigator)) return resolve({ error: 'This browser does not support location.' });
-      navigator.geolocation.getCurrentPosition(
-        p => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy,
-                       altitude: p.coords.altitude, altitudeAccuracy: p.coords.altitudeAccuracy,
-                       heading: p.coords.heading, speed: p.coords.speed, time: p.timestamp }),
-        e => resolve({ error: e.code === 1 ? 'Location permission was denied. Allow location access in your browser settings and try again.'
-                            : e.code === 2 ? 'Location is unavailable right now.'
-                            : 'Location request timed out.' }),
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-      );
-    });
+  const inFrame = (() => { try { return window.self !== window.top; } catch { return true; } })();
+  function positionOnce(opts) {
+    return new Promise(resolve => navigator.geolocation.getCurrentPosition(
+      p => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy,
+                     altitude: p.coords.altitude, altitudeAccuracy: p.coords.altitudeAccuracy,
+                     heading: p.coords.heading, speed: p.coords.speed, time: p.timestamp }),
+      e => resolve({ error: e, code: e.code }), opts));
+  }
+  async function getDeviceLocation() {
+    if (!window.isSecureContext) return { error: 'Location needs HTTPS. Open this page from an https:// address (or localhost).' };
+    if (!('geolocation' in navigator)) return { error: 'This browser does not support location.' };
+    // 1) precise fix, 2) if it times out, accept a coarse/cached fix
+    let r = await positionOnce({ enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });
+    if (r.error && r.code !== 1) r = await positionOnce({ enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 });
+    if (!r.error) return r;
+    if (r.code === 1) return { error: inFrame
+      ? 'Location is blocked because this page is embedded inside another page. Open it in its own browser tab or from your own URL.'
+      : 'Location permission was denied. Allow location for this site in your browser settings, then tap Try again.' };
+    if (r.code === 2) return { error: 'Location is unavailable right now. Check that Location Services is on for your browser.' };
+    return { error: 'Location request timed out. Move somewhere with better GPS signal and tap Try again.' };
   }
   function renderDeviceLocation() {
     const el = $('deviceLoc');
@@ -245,6 +252,56 @@
     devicePos = await getDeviceLocation();
     renderDeviceLocation();
     renderLocStatus();
+  }
+
+  // ---------- Device info (from the browser, since captured images carry no EXIF) ----------
+  function gpuName() {
+    try {
+      const c = document.createElement('canvas');
+      const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+      const ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+      return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : null;
+    } catch { return null; }
+  }
+  async function deviceInfo() {
+    const ua = navigator.userAgent || '';
+    let platform = navigator.platform || null, os = null, browser = null, model = null;
+    const uad = navigator.userAgentData;
+    if (uad && uad.getHighEntropyValues) {
+      try {
+        const h = await uad.getHighEntropyValues(['platform', 'platformVersion', 'model', 'fullVersionList']);
+        os = h.platform + (h.platformVersion ? ' ' + h.platformVersion : '');
+        model = h.model || null;
+        const b = (h.fullVersionList || []).find(x => !/Not|Brand/i.test(x.brand));
+        browser = b ? b.brand + ' ' + b.version : null;
+      } catch {}
+    }
+    if (!os) {
+      const m = ua.match(/iPhone OS (\d+[_\d]*)/) || ua.match(/CPU OS (\d+[_\d]*)/);
+      if (m) os = (/iPad/.test(ua) || (platform === 'MacIntel' && navigator.maxTouchPoints > 1) ? 'iPadOS ' : 'iOS ') + m[1].replace(/_/g, '.');
+      else if (/Android ([\d.]+)/.test(ua)) os = 'Android ' + RegExp.$1;
+      else if (/Mac OS X ([\d_]+)/.test(ua)) os = 'macOS ' + RegExp.$1.replace(/_/g, '.');
+      else if (/Windows NT ([\d.]+)/.test(ua)) os = 'Windows ' + RegExp.$1;
+    }
+    if (!model) {
+      if (/iPhone/.test(ua)) model = 'iPhone (exact model not exposed to web pages)';
+      else if (/iPad/.test(ua) || os?.startsWith('iPadOS')) model = 'iPad';
+      else { const a = ua.match(/Android [\d.]+; ([^;)]+)/); if (a) model = a[1].trim(); }
+    }
+    if (!browser) {
+      const b = ua.match(/(CriOS|FxiOS|EdgiOS|Chrome|Firefox|Safari|Edg)\/([\d.]+)/);
+      if (b) browser = ({CriOS:'Chrome',FxiOS:'Firefox',EdgiOS:'Edge',Edg:'Edge'}[b[1]] || b[1]) + ' ' + b[2];
+    }
+    return [
+      ['Model', model],
+      ['Operating system', os],
+      ['Browser', browser],
+      ['Screen', screen.width + ' × ' + screen.height + ' @ ' + (window.devicePixelRatio || 1) + 'x'],
+      ['GPU', gpuName()],
+      ['Language', navigator.language],
+      ['Time zone', Intl.DateTimeFormat().resolvedOptions().timeZone],
+      ['Standalone / PWA', window.navigator.standalone || matchMedia('(display-mode: standalone)').matches ? 'Yes' : 'No'],
+    ];
   }
 
   // ---------- Ask for location as soon as the page opens ----------
@@ -350,14 +407,18 @@
 
     const tagCount = Object.keys(exif).length;
     if (libraryAvailable && tagCount === 0) {
-      showNotice('No EXIF data found in this image. Photos taken directly through the browser camera and images shared through some apps often have metadata stripped. Try choosing the original from your library.');
+      showNotice(fromCamera
+        ? 'The browser hands over camera captures without EXIF, so camera make/model and GPS are not inside this image. The device and location shown below come from the browser and GPS directly.'
+        : 'No EXIF data found in this image. Images shared through messaging apps or as screenshots usually have metadata stripped. Try choosing the original from your library.');
     }
 
     let lat = exif.latitude, lng = exif.longitude;
     let alt = exif.GPSAltitude;
     if (alt != null && exif.GPSAltitudeRef === 1) alt = -alt;
 
+    const devRows = await deviceInfo();
     const groups = [
+      { title: fromCamera ? 'Device that took this photo' : 'This device', rows: devRows },
       { title: 'File', rows: [
         ['Name', file.name || null],
         ['Type', file.type || null],
@@ -432,6 +493,7 @@
     for (const k of keys) rawSerializable[k] = exif[k] instanceof Date ? exif[k].toISOString() : (exif[k] instanceof Uint8Array ? '[' + exif[k].length + ' bytes]' : exif[k]);
     currentJSON = {
       file: { name: file.name, type: file.type, size: file.size, width: dims.w, height: dims.h, lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : null },
+      device: Object.fromEntries(devRows.filter(r => r[1] != null).map(r => [r[0], r[1]])),
       location: lat != null ? { latitude: lat, longitude: lng, altitude: alt ?? null } : null,
       tags: rawSerializable,
     };
