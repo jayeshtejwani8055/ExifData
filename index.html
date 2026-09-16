@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo metadata inspector</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
+<style>
+  :root {
+    --bg: #eceef0;
+    --surface: #ffffff;
+    --surface-2: #f5f6f7;
+    --ink: #1d2126;
+    --ink-2: #5a626b;
+    --line: #d5d9de;
+    --accent: #0f6e63;
+    --accent-ink: #ffffff;
+    --warn-bg: #fff4e0;
+    --warn-ink: #7a4a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #15181b;
+      --surface: #1f2327;
+      --surface-2: #272c31;
+      --ink: #eef1f3;
+      --ink-2: #9aa3ac;
+      --line: #353b41;
+      --accent: #3fbfae;
+      --accent-ink: #0d1a18;
+      --warn-bg: #3a2c12;
+      --warn-ink: #ffd58a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #15181b; --surface: #1f2327; --surface-2: #272c31; --ink: #eef1f3; --ink-2: #9aa3ac;
+    --line: #353b41; --accent: #3fbfae; --accent-ink: #0d1a18; --warn-bg: #3a2c12; --warn-ink: #ffd58a;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; }
+
+  h1 { font-size: 1.75rem; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 6px; }
+  .lede { color: var(--ink-2); margin: 0 0 16px; max-width: 60ch; }
+  .loc-status { font-size: .92rem; padding: 10px 14px; border-radius: 10px; margin-bottom: 20px; background: var(--surface); border: 1px solid var(--line); color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .loc-status.ok { border-color: var(--accent); color: var(--ink); }
+  .loc-status.error { background: var(--warn-bg); color: var(--warn-ink); border-color: transparent; }
+  .loc-status .btn { padding: 5px 10px; font-size: .85rem; }
+
+  .pickers { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px; }
+  .picker {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+    padding: 26px 16px; border: 1.5px dashed var(--line); border-radius: 14px;
+    background: var(--surface); color: var(--ink); cursor: pointer; font: inherit; font-weight: 600;
+    transition: border-color .15s, background .15s;
+  }
+  .picker:hover { border-color: var(--accent); }
+  .picker:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .picker svg { width: 28px; height: 28px; stroke: var(--accent); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .picker small { font-weight: 500; color: var(--ink-2); }
+  input[type=file] { display: none; }
+
+  .result { display: none; }
+  .result.show { display: block; }
+
+  .preview {
+    display: grid; grid-template-columns: 120px 1fr; gap: 16px; align-items: center;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 16px;
+  }
+  .preview img { width: 120px; height: 120px; object-fit: cover; border-radius: 10px; background: var(--surface-2); display: block; }
+  .preview .name { font-weight: 700; word-break: break-all; }
+  .preview .sub { color: var(--ink-2); font-size: .92rem; }
+
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+  .btn {
+    font: inherit; font-weight: 600; font-size: .95rem; padding: 10px 16px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer;
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  .notice { background: var(--warn-bg); color: var(--warn-ink); border-radius: 10px; padding: 12px 14px; font-size: .92rem; margin-bottom: 16px; display: none; }
+  .notice.show { display: block; }
+
+  section.group { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 14px; overflow: hidden; }
+  section.group h2 {
+    font-size: 1rem; font-weight: 700; margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  section.group h2 span { color: var(--ink-2); font-weight: 500; font-size: .85rem; }
+  .rows { display: grid; grid-template-columns: minmax(120px, 38%) 1fr; }
+  .rows > div { padding: 9px 16px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  .rows > div:nth-last-child(-n+2) { border-bottom: 0; }
+  .rows .k { color: var(--ink-2); font-size: .92rem; }
+  .rows .v { font-weight: 500; }
+  .rows .v a { color: var(--accent); }
+  .empty { padding: 14px 16px; color: var(--ink-2); font-size: .92rem; }
+
+  details.raw { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+  details.raw summary { padding: 12px 16px; font-weight: 700; cursor: pointer; list-style: none; }
+  details.raw summary::-webkit-details-marker { display: none; }
+  details.raw summary::before { content: "+"; display: inline-block; width: 18px; color: var(--accent); }
+  details.raw[open] summary::before { content: "–"; }
+  details.raw .scroll { overflow-x: auto; border-top: 1px solid var(--line); }
+  details.raw table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  details.raw td { padding: 7px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  details.raw td:first-child { color: var(--ink-2); white-space: nowrap; }
+  details.raw td:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  .map { width: 100%; height: 130px; border-radius: 10px; background: var(--surface-2); margin: 0 16px 14px; width: calc(100% - 32px); display: block; }
+
+  .howto { border-top: 1px solid var(--line); padding: 6px 16px 16px; font-size: .95rem; }
+  .howto h3 { font-size: 1rem; font-weight: 700; margin: 18px 0 4px; }
+  .howto p { margin: 6px 0; color: var(--ink); max-width: 68ch; }
+  .howto code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em; background: var(--surface-2); padding: 1px 5px; border-radius: 5px; }
+  .howto pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; background: var(--surface-2); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; }
+
+  @media (max-width: 520px) {
+    .pickers { grid-template-columns: 1fr; }
+    .preview { grid-template-columns: 88px 1fr; }
+    .preview img { width: 88px; height: 88px; }
+    .rows { grid-template-columns: 1fr; }
+    .rows .k { padding-bottom: 0; border-bottom: 0; }
+    .rows > div:nth-last-child(-n+2) { border-bottom: 1px solid var(--line); }
+    .rows > div:last-child { border-bottom: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Photo metadata inspector</h1>
+  <p class="lede">Take a photo or pick one from your library. Everything is read on this device — nothing is uploaded.</p>
+  <div class="loc-status" id="locStatus" aria-live="polite"></div>
+
+  <div class="pickers">
+    <button class="picker" id="btnCamera" type="button">
+      <svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+      Take a photo
+      <small>Opens the camera</small>
+    </button>
+    <button class="picker" id="btnLibrary" type="button">
+      <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 16l4-4 4 4 3-3 5 5"/><circle cx="16" cy="9" r="1.5"/></svg>
+      Choose from library
+      <small>JPEG, HEIC, PNG, TIFF, RAW</small>
+    </button>
+    <input type="file" id="inCamera" accept="image/*" capture="environment">
+    <input type="file" id="inLibrary" accept="image/*,.heic,.heif,.dng,.cr2,.nef,.arw">
+  </div>
+
+  <div class="result" id="result">
+    <div class="preview">
+      <img id="thumb" alt="Selected photo preview">
+      <div>
+        <div class="name" id="fileName"></div>
+        <div class="sub" id="fileSub"></div>
+      </div>
+    </div>
+
+    <div class="notice" id="notice"></div>
+
+    <div class="actions">
+      <button class="btn primary" id="btnCopy" type="button">Copy as JSON</button>
+      <button class="btn" id="btnReset" type="button">Start over</button>
+    </div>
+
+    <div id="groups"></div>
+
+    <details class="raw" id="raw">
+      <summary>All tags found</summary>
+      <div class="scroll"><table id="rawTable"></table></div>
+    </details>
+  </div>
+
+  <details class="raw" style="margin-top:24px" id="howto">
+    <summary>Run this on a real device</summary>
+    <div class="howto">
+      <p>Camera and location access only work over HTTPS (or <code>localhost</code>), so pick one of these:</p>
+      <h3>Open the hosted link on your phone</h3>
+      <p>Open this page's URL in Safari or Chrome on the device. Tap <strong>Take a photo</strong>; the browser asks for camera, then location. On iOS, Share → <strong>Add to Home Screen</strong> launches it like an app.</p>
+      <h3>Host the HTML file yourself</h3>
+      <p>Save this file and put it on a free static host (GitHub Pages, Netlify, Vercel, Cloudflare Pages), then open that URL on your phone.</p>
+      <p>For local testing on the same Wi‑Fi, serve the folder and tunnel it to get an HTTPS URL:</p>
+      <pre>npx serve .
+npx localtunnel --port 3000   # or: ngrok http 3000</pre>
+      <h3>Wrap it in a native iOS app</h3>
+      <p>Load the file in a <code>WKWebView</code>. Add these keys to <code>Info.plist</code>, and <code>&lt;input capture&gt;</code> plus <code>navigator.geolocation</code> will work inside the web view:</p>
+      <pre>NSCameraUsageDescription
+NSPhotoLibraryUsageDescription
+NSLocationWhenInUseUsageDescription</pre>
+      <h3>Good to know</h3>
+      <p>iOS strips EXIF from photos captured through the browser camera, so the <strong>Device location</strong> section is what records the precise position for those shots. EXIF GPS fields fill in only for originals chosen from the library.</p>
+    </div>
+  </details>
+</main>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const inCamera = $('inCamera'), inLibrary = $('inLibrary');
+  let currentJSON = null;
+
+  $('btnCamera').addEventListener('click', () => inCamera.click());
+  $('btnLibrary').addEventListener('click', () => inLibrary.click());
+  inCamera.addEventListener('change', e => handle(e.target.files[0], true));
+  inLibrary.addEventListener('change', e => handle(e.target.files[0], false));
+
+  // ---------- Device geolocation ----------
+  let devicePos = null;
+  function getDeviceLocation() {
+    return new Promise(resolve => {
+      if (!('geolocation' in navigator)) return resolve({ error: 'This browser does not support location.' });
+      navigator.geolocation.getCurrentPosition(
+        p => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy,
+                       altitude: p.coords.altitude, altitudeAccuracy: p.coords.altitudeAccuracy,
+                       heading: p.coords.heading, speed: p.coords.speed, time: p.timestamp }),
+        e => resolve({ error: e.code === 1 ? 'Location permission was denied. Allow location access in your browser settings and try again.'
+                            : e.code === 2 ? 'Location is unavailable right now.'
+                            : 'Location request timed out.' }),
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      );
+    });
+  }
+  function renderDeviceLocation() {
+    const el = $('deviceLoc');
+    if (!el) return;
+    if (!devicePos) {
+      el.innerHTML = '<div class="empty">Reading precise device location…</div>';
+      return;
+    }
+    if (devicePos.error) {
+      el.innerHTML = '<div class="empty">' + esc(devicePos.error) + ' <button class="btn" id="retryLoc" type="button" style="margin-left:8px">Try again</button></div>';
+      $('retryLoc').addEventListener('click', fetchAndRenderLocation);
+      return;
+    }
+    const d = devicePos;
+    const rows = [
+      ['Latitude', d.lat.toFixed(7) + '°'],
+      ['Longitude', d.lng.toFixed(7) + '°'],
+      ['Accuracy', '± ' + Math.round(d.accuracy) + ' m'],
+      ['Altitude', d.altitude != null ? Math.round(d.altitude) + ' m' + (d.altitudeAccuracy != null ? ' (± ' + Math.round(d.altitudeAccuracy) + ' m)' : '') : null],
+      ['Heading', d.heading != null && !isNaN(d.heading) ? Math.round(d.heading) + '°' : null],
+      ['Speed', d.speed != null ? (d.speed * 3.6).toFixed(1) + ' km/h' : null],
+      ['Recorded', fmtDate(new Date(d.time))],
+      ['Open in maps', { html: '<a href="https://www.google.com/maps?q=' + d.lat + ',' + d.lng + '" target="_blank" rel="noopener">' + d.lat.toFixed(6) + ', ' + d.lng.toFixed(6) + '</a>' }],
+    ].filter(r => r[1] != null);
+    el.innerHTML = '<svg class="map" viewBox="0 0 400 130" aria-hidden="true">' + miniMap(d.lat, d.lng) + '</svg>' +
+      '<div class="rows">' + rows.map(r => '<div class="k">' + esc(r[0]) + '</div><div class="v">' + (r[1].html ? r[1].html : esc(String(r[1]))) + '</div>').join('') + '</div>';
+    const h = $('deviceLocCount'); if (h) h.textContent = rows.length + ' fields';
+    if (currentJSON) currentJSON.deviceLocation = { latitude: d.lat, longitude: d.lng, accuracyMeters: d.accuracy, altitude: d.altitude, heading: d.heading, speed: d.speed, recordedAt: new Date(d.time).toISOString() };
+  }
+  async function fetchAndRenderLocation() {
+    devicePos = null; renderDeviceLocation();
+    devicePos = await getDeviceLocation();
+    renderDeviceLocation();
+    renderLocStatus();
+  }
+
+  // ---------- Ask for location as soon as the page opens ----------
+  function renderLocStatus() {
+    const s = $('locStatus');
+    if (!devicePos) { s.textContent = 'Requesting location permission…'; s.className = 'loc-status'; return; }
+    if (devicePos.error) {
+      s.innerHTML = esc(devicePos.error) + ' <button class="btn" id="retryTop" type="button">Try again</button>';
+      s.className = 'loc-status error';
+      $('retryTop').addEventListener('click', async () => { devicePos = null; renderLocStatus(); devicePos = await getDeviceLocation(); renderLocStatus(); });
+      return;
+    }
+    s.textContent = 'Location ready: ' + devicePos.lat.toFixed(6) + ', ' + devicePos.lng.toFixed(6) + ' (± ' + Math.round(devicePos.accuracy) + ' m)';
+    s.className = 'loc-status ok';
+  }
+  (async () => {
+    renderLocStatus();
+    devicePos = await getDeviceLocation();
+    renderLocStatus();
+  })();
+  $('btnReset').addEventListener('click', () => {
+    inCamera.value = ''; inLibrary.value = '';
+    $('result').classList.remove('show');
+    $('thumb').removeAttribute('src');
+    window.scrollTo({ top: 0 });
+  });
+  $('btnCopy').addEventListener('click', async () => {
+    if (!currentJSON) return;
+    const text = JSON.stringify(currentJSON, null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+      flash($('btnCopy'), 'Copied');
+    } catch {
+      // Fallback for browsers without clipboard API
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); flash($('btnCopy'), 'Copied'); } catch { flash($('btnCopy'), 'Copy failed'); }
+      ta.remove();
+    }
+  });
+  function flash(btn, label) {
+    const old = btn.textContent; btn.textContent = label;
+    setTimeout(() => btn.textContent = old, 1400);
+  }
+
+  // ---------- Formatting helpers ----------
+  const fmtBytes = n => n < 1024 ? n + ' B' : n < 1048576 ? (n/1024).toFixed(1) + ' KB' : (n/1048576).toFixed(2) + ' MB';
+  const fmtDate = d => d instanceof Date && !isNaN(d) ? d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' }) : (d ?? null);
+  const fmtExposure = t => t == null ? null : t >= 1 ? t + ' s' : '1/' + Math.round(1 / t) + ' s';
+  const fmtF = f => f == null ? null : 'f/' + Number(f).toFixed(1).replace(/\.0$/, '');
+  const fmtMm = f => f == null ? null : Math.round(f * 10) / 10 + ' mm';
+  const fmtCoord = (v, pos, neg) => v == null ? null : Math.abs(v).toFixed(6) + '° ' + (v >= 0 ? pos : neg);
+  const ORIENT = {1:'Normal',2:'Mirrored horizontally',3:'Rotated 180°',4:'Mirrored vertically',5:'Mirrored + rotated 90° CW',6:'Rotated 90° CW',7:'Mirrored + rotated 90° CCW',8:'Rotated 90° CCW'};
+
+  function readDimensions(file) {
+    return new Promise(resolve => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { resolve({ w: img.naturalWidth, h: img.naturalHeight, url }); };
+      img.onerror = () => { resolve({ w: null, h: null, url }); };
+      img.src = url;
+    });
+  }
+
+  function valueToString(v) {
+    if (v == null) return '';
+    if (v instanceof Date) return fmtDate(v);
+    if (v instanceof Uint8Array || v instanceof ArrayBuffer) return '[' + (v.byteLength ?? v.length) + ' bytes]';
+    if (Array.isArray(v)) return v.length > 12 ? '[' + v.length + ' values]' : v.map(valueToString).join(', ');
+    if (typeof v === 'object') return JSON.stringify(v);
+    return String(v);
+  }
+
+  // ---------- Main ----------
+  async function handle(file, fromCamera) {
+    if (!file) return;
+    $('result').classList.add('show');
+    $('groups').innerHTML = '<div class="empty">Reading…</div>';
+    $('rawTable').innerHTML = '';
+    $('notice').classList.remove('show');
+    const preloaded = devicePos && !devicePos.error ? devicePos : null;
+    devicePos = null; currentJSON = null;
+    // Permission was already requested on load; now get a fresh fix as close to the shot as possible
+    const locPromise = fromCamera ? getDeviceLocation().then(p => (p.error && preloaded) ? preloaded : p) : null;
+
+    const dims = await readDimensions(file);
+    $('thumb').src = dims.url;
+    $('fileName').textContent = file.name || 'Untitled photo';
+    $('fileSub').textContent = [file.type || 'unknown type', fmtBytes(file.size), dims.w ? dims.w + ' × ' + dims.h + ' px' : null].filter(Boolean).join('  ·  ');
+
+    let exif = {};
+    let libraryAvailable = typeof exifr !== 'undefined';
+    if (libraryAvailable) {
+      try {
+        exif = (await exifr.parse(file, { tiff: true, exif: true, gps: true, iptc: true, xmp: true, icc: false, interop: true, ifd1: false, mergeOutput: true, reviveValues: true })) || {};
+      } catch (err) {
+        exif = {};
+        showNotice('Could not parse embedded metadata: ' + (err && err.message ? err.message : 'unsupported format') + '. Basic file details are shown below.');
+      }
+    } else {
+      showNotice('The metadata parser did not load, so only basic file details are shown. Check your connection and reload.');
+    }
+
+    const tagCount = Object.keys(exif).length;
+    if (libraryAvailable && tagCount === 0) {
+      showNotice('No EXIF data found in this image. Photos taken directly through the browser camera and images shared through some apps often have metadata stripped. Try choosing the original from your library.');
+    }
+
+    let lat = exif.latitude, lng = exif.longitude;
+    let alt = exif.GPSAltitude;
+    if (alt != null && exif.GPSAltitudeRef === 1) alt = -alt;
+
+    const groups = [
+      { title: 'File', rows: [
+        ['Name', file.name || null],
+        ['Type', file.type || null],
+        ['Size', fmtBytes(file.size)],
+        ['Dimensions', dims.w ? dims.w + ' × ' + dims.h + ' px' : null],
+        ['Megapixels', dims.w ? (dims.w * dims.h / 1e6).toFixed(1) + ' MP' : null],
+        ['Modified', file.lastModified ? fmtDate(new Date(file.lastModified)) : null],
+      ]},
+      { title: 'Camera', rows: [
+        ['Make', exif.Make], ['Model', exif.Model],
+        ['Lens', exif.LensModel || exif.LensMake],
+        ['Software', exif.Software],
+        ['Body serial', exif.BodySerialNumber || exif.SerialNumber],
+      ]},
+      { title: 'Exposure', rows: [
+        ['Shutter speed', fmtExposure(exif.ExposureTime)],
+        ['Aperture', fmtF(exif.FNumber)],
+        ['ISO', exif.ISO ?? exif.ISOSpeedRatings],
+        ['Focal length', fmtMm(exif.FocalLength)],
+        ['Focal length (35mm eq.)', fmtMm(exif.FocalLengthIn35mmFormat)],
+        ['Exposure compensation', exif.ExposureCompensation != null ? (exif.ExposureCompensation > 0 ? '+' : '') + exif.ExposureCompensation + ' EV' : null],
+        ['Exposure program', exif.ExposureProgram],
+        ['Metering mode', exif.MeteringMode],
+        ['Flash', exif.Flash],
+        ['White balance', exif.WhiteBalance],
+        ['Scene type', exif.SceneCaptureType],
+      ]},
+      { title: 'Date & time', rows: [
+        ['Taken', fmtDate(exif.DateTimeOriginal)],
+        ['Created', fmtDate(exif.CreateDate)],
+        ['Modified (EXIF)', fmtDate(exif.ModifyDate)],
+        ['Time zone offset', exif.OffsetTimeOriginal || exif.OffsetTime],
+        ['Sub-seconds', exif.SubSecTimeOriginal],
+      ]},
+      { title: 'Location', map: lat != null && lng != null ? { lat, lng } : null, rows: [
+        ['Latitude', fmtCoord(lat, 'N', 'S')],
+        ['Longitude', fmtCoord(lng, 'E', 'W')],
+        ['Altitude', alt != null ? Math.round(alt) + ' m' : null],
+        ['Direction', exif.GPSImgDirection != null ? Math.round(exif.GPSImgDirection) + '° ' + (exif.GPSImgDirectionRef === 'T' ? 'true' : exif.GPSImgDirectionRef === 'M' ? 'magnetic' : '') : null],
+        ['Speed', exif.GPSSpeed != null ? exif.GPSSpeed + ' ' + ({K:'km/h',M:'mph',N:'knots'}[exif.GPSSpeedRef] || '') : null],
+        ['GPS time', exif.GPSDateStamp ? exif.GPSDateStamp + (exif.GPSTimeStamp ? ' ' + valueToString(exif.GPSTimeStamp) + ' UTC' : '') : null],
+        ['Open in maps', lat != null ? { html: '<a href="https://www.google.com/maps?q=' + lat + ',' + lng + '" target="_blank" rel="noopener">' + lat.toFixed(5) + ', ' + lng.toFixed(5) + '</a>' } : null],
+      ]},
+      { title: 'Image', rows: [
+        ['Orientation', exif.Orientation != null ? (ORIENT[exif.Orientation] || exif.Orientation) : null],
+        ['Color space', exif.ColorSpace],
+        ['Resolution', exif.XResolution ? exif.XResolution + ' × ' + (exif.YResolution || exif.XResolution) + ' ' + (exif.ResolutionUnit === 3 ? 'dpcm' : 'dpi') : null],
+        ['Bit depth', exif.BitsPerSample],
+        ['Compression', exif.Compression],
+        ['Artist', exif.Artist || exif.Creator],
+        ['Copyright', exif.Copyright || exif.Rights],
+        ['Description', exif.ImageDescription || exif.Description],
+        ['Keywords', exif.Keywords ? valueToString(exif.Keywords) : null],
+      ]},
+    ];
+
+    const deviceSection = '<section class="group"><h2>Device location<span id="deviceLocCount">' + (fromCamera ? '' : 'optional') + '</span></h2><div id="deviceLoc">' +
+      (fromCamera ? '' : '<div class="empty">This is where the device is now, not where the photo was taken. <button class="btn" id="useLoc" type="button" style="margin-left:8px">Use current location</button></div>') +
+      '</div></section>';
+    $('groups').innerHTML = groups.map(renderGroup).join('') + deviceSection;
+    if (!fromCamera) $('useLoc').addEventListener('click', fetchAndRenderLocation);
+
+    // Raw table
+    const keys = Object.keys(exif).sort((a, b) => a.localeCompare(b));
+    $('rawTable').innerHTML = keys.length
+      ? keys.map(k => '<tr><td>' + esc(k) + '</td><td>' + esc(valueToString(exif[k])) + '</td></tr>').join('')
+      : '<tr><td colspan="2">No embedded tags.</td></tr>';
+    $('raw').querySelector('summary').textContent = 'All tags found (' + keys.length + ')';
+
+    // JSON for copying
+    const rawSerializable = {};
+    for (const k of keys) rawSerializable[k] = exif[k] instanceof Date ? exif[k].toISOString() : (exif[k] instanceof Uint8Array ? '[' + exif[k].length + ' bytes]' : exif[k]);
+    currentJSON = {
+      file: { name: file.name, type: file.type, size: file.size, width: dims.w, height: dims.h, lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : null },
+      location: lat != null ? { latitude: lat, longitude: lng, altitude: alt ?? null } : null,
+      tags: rawSerializable,
+    };
+
+    if (locPromise) {
+      renderDeviceLocation();
+      devicePos = await locPromise;
+      renderDeviceLocation();
+    }
+  }
+
+  function renderGroup(g) {
+    const rows = g.rows.filter(r => r[1] != null && r[1] !== '');
+    const count = rows.length;
+    let body;
+    if (!count) body = '<div class="empty">Nothing recorded.</div>';
+    else body = '<div class="rows">' + rows.map(r => '<div class="k">' + esc(r[0]) + '</div><div class="v">' + (r[1] && r[1].html ? r[1].html : esc(String(r[1]))) + '</div>').join('') + '</div>';
+    const map = g.map ? '<svg class="map" viewBox="0 0 400 130" aria-hidden="true">' + miniMap(g.map.lat, g.map.lng) + '</svg>' : '';
+    return '<section class="group"><h2>' + esc(g.title) + '<span>' + count + ' field' + (count === 1 ? '' : 's') + '</span></h2>' + map + body + '</section>';
+  }
+
+  // Tiny equirectangular world sketch with a pin (no network needed)
+  function miniMap(lat, lng) {
+    const x = (lng + 180) / 360 * 400, y = (90 - lat) / 180 * 130;
+    let grid = '';
+    for (let i = 1; i < 6; i++) grid += '<line x1="' + (i*400/6) + '" y1="0" x2="' + (i*400/6) + '" y2="130" stroke="var(--line)" stroke-width="1"/>';
+    for (let i = 1; i < 3; i++) grid += '<line x1="0" y1="' + (i*130/3) + '" x2="400" y2="' + (i*130/3) + '" stroke="var(--line)" stroke-width="1"/>';
+    return grid +
+      '<line x1="' + x + '" y1="0" x2="' + x + '" y2="130" stroke="var(--accent)" stroke-width="1" stroke-dasharray="3 3"/>' +
+      '<line x1="0" y1="' + y + '" x2="400" y2="' + y + '" stroke="var(--accent)" stroke-width="1" stroke-dasharray="3 3"/>' +
+      '<circle cx="' + x + '" cy="' + y + '" r="9" fill="var(--accent)" opacity=".25"/>' +
+      '<circle cx="' + x + '" cy="' + y + '" r="4" fill="var(--accent)"/>';
+  }
+
+  function showNotice(msg) { const n = $('notice'); n.textContent = msg; n.classList.add('show'); }
+  function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+})();
+</script>
+</body>
+</html>
